@@ -2,522 +2,224 @@
 
 ## From Detecting Faults to Deciding What Happens Next
 
-A drone flying over a solar farm can capture thousands of images. Detecting an anomaly is useful, but it is only the beginning.
+Most drones find the problem. SolarGuard decides what to do about it.
 
-The harder question is:
+Autonomous inspection systems are getting better at spotting anomalies. Hotspots, dust accumulation, physical damage: modern sensors and computer vision can flag all of it. But flagging a problem and knowing what to do next are two different things, and that second part is where most systems still hand control back to a human.
 
-> **Once the system identifies a potential problem, what should it do next?**
-
-Should it perform a quick inspection, switch to thermal sensing, investigate the fault more deeply, attempt a cleaning action, or escalate the issue to a human technician?
-
-**SolarGuard AI** explores this decision-making problem through Reinforcement Learning.
-
-The project models an autonomous solar-panel inspection drone as an agent operating within a **Markov Decision Process (MDP)**. At every inspection step, the agent observes the current condition of a panel cluster, evaluates the possible actions, considers their uncertain outcomes and associated costs, and selects the action that maximises long-term expected reward.
-
-Rather than building another system that simply says **"there is a fault here,"** SolarGuard focuses on the next layer of intelligence:
-
-**"Given what I know right now, what is the most valuable action to take?"**
+SolarGuard closes that gap. The drone does not just observe. It decides.
 
 ---
 
-# Why SolarGuard?
+## The Problem No One Talks About
 
-Solar and renewable-energy operators are increasingly looking toward autonomous inspection, AI-based anomaly detection, thermal imaging, robotics, and predictive maintenance to make large-scale asset management faster and more scalable.
+Companies like Percepto, Skydio, and Zeitview are already deploying autonomous inspection fleets across solar, wind, and infrastructure sites. The perception side is largely solved. A computer vision model identifies a hotspot. A thermal sensor confirms the anomaly. A monitoring platform flags the underperforming panel.
 
-That creates an interesting gap between **perception** and **action**.
+And then a human still has to decide what to do about it.
 
-A computer vision model may identify a hotspot.
+That decision layer is what SolarGuard is built for. The agent observes the current panel condition, weighs five possible actions against their costs and uncertain outcomes, and selects the one that maximises long-term expected reward. Not the next reward. The long-term one.
 
-A thermal system may confirm an anomaly.
-
-A monitoring platform may flag an underperforming panel.
-
-But an autonomous inspection system still needs to decide how to respond.
-
-SolarGuard addresses that decision layer by combining:
-
-**Reinforcement Learning + Probabilistic Modelling + Optimisation + Simulation**
-
-The result is an interpretable framework for autonomous inspection decisions under uncertainty.
+> **"Given what I know right now, what is the most valuable action to take?"**
 
 ---
 
-# The Core Idea
+## How It Thinks
 
-Traditional inspection can be represented as:
+Traditional inspection is a pipeline:
 
-```text
-Drone
-  ↓
-Detect Fault
-  ↓
-Report Fault
+```
+Drone  →  Detect Fault  →  Report Fault
 ```
 
-SolarGuard takes a more intelligent approach:
+SolarGuard runs a decision loop:
 
-```text
-Observe Asset
-     ↓
-Understand Current State
-     ↓
-Evaluate Possible Actions
-     ↓
-Estimate Future Outcomes
-     ↓
-Select Optimal Action
-     ↓
-Observe New State
-     ↓
-Repeat
+```
+Observe Asset  →  Evaluate Actions  →  Estimate Outcomes  →  Act  →  Repeat
 ```
 
-This turns inspection from a static detection task into a **sequential decision-making problem**.
+The difference is not cosmetic. In a pipeline, every fault triggers the same response. In a decision loop, the right response depends on context: what state the panel is in, what the action costs, what happens downstream if the wrong call is made. The agent has to learn when doing less is better than doing more, and that constraint is what makes the problem genuinely hard.
 
-The agent is not rewarded simply for taking more actions.
-
-It must learn when an action is worth its cost and when doing less is actually the better decision.
+The environment is modelled as a **Markov Decision Process** across **15 inspection stops per flight**, with a discount factor of **γ = 0.95** to keep future consequences in play.
 
 ---
 
-# Problem Formulation
+## The Environment
 
-SolarGuard represents the inspection environment as:
+### 8 Panel States
 
-**MDP = (S, A, P, R, γ)**
+| State | What It Means |
+|---|---|
+| `NORMAL` | No intervention needed |
+| `DUST_MINOR` | Light contamination, minor output loss |
+| `DUST_HEAVY` | Heavy contamination, cleaning may restore output |
+| `HOTSPOT_EARLY` | Thermal anomaly developing beneath the surface |
+| `HOTSPOT_SEVERE` | Component failure risk, urgent |
+| `PHYSICAL_DAMAGE` | Beyond drone repair, needs a human crew |
+| `POST_CLEAN_OK` | Recently resolved, near-normal output |
+| `LOGGED_PENDING` | Flagged for crew, awaiting intervention |
 
-where:
+### 5 Actions
 
-* **S** represents the possible solar-panel conditions
-* **A** represents the actions available to the drone
-* **P** represents the probability of transitioning between conditions
-* **R** defines the reward associated with decisions
-* **γ = 0.95** controls the importance of future rewards
+| Action | The Tradeoff |
+|---|---|
+| `FAST_PASS` | Low battery cost, may miss developing faults |
+| `THERMAL_SCAN` | Catches heat anomalies reliably, moderate cost |
+| `HOVER_DIAGNOSE` | Highest accuracy, highest battery draw |
+| `PHYSICAL_CLEAN` | Resolves dust contamination directly |
+| `LOG_AND_SKIP` | Escalates to crew, zero battery cost |
 
-The planning horizon covers **15 inspection stops per flight**.
-
-This gives the agent a finite sequence of decisions in which today's action can influence tomorrow's state.
-
----
-
-# State Space
-
-The environment contains **8 operational states**, covering conditions ranging from normal panels through contamination and thermal faults to physical damage and human escalation.
-
-| State             | Condition             | Interpretation                     |
-| ----------------- | --------------------- | ---------------------------------- |
-| `NORMAL`          | Normal operation      | No immediate intervention required |
-| `DUST_MINOR`      | Minor contamination   | Small performance impact           |
-| `DUST_HEAVY`      | Heavy contamination   | Cleaning may restore performance   |
-| `HOTSPOT_EARLY`   | Early thermal anomaly | Potential developing fault         |
-| `HOTSPOT_SEVERE`  | Severe hotspot        | Higher operational risk            |
-| `PHYSICAL_DAMAGE` | Physical damage       | Requires appropriate escalation    |
-| `POST_CLEAN_OK`   | Restored condition    | Asset recently addressed           |
-| `LOGGED_PENDING`  | Logged fault          | Awaiting human intervention        |
-
-The states deliberately represent different operational contexts because **the same action does not make sense everywhere**.
-
-A healthy panel does not need an expensive diagnostic hover.
-
-A severe hotspot may justify one.
-
-That difference is where the decision-making problem becomes interesting.
+Every action is a tradeoff between what the drone learns and what it spends to learn it.
 
 ---
 
-#  Action Space
+## Reward Engineering
 
-The drone has five possible actions:
+Two objectives pull against each other throughout every flight:
 
-| Action           | What the drone does                      |
-| ---------------- | ---------------------------------------- |
-| `FAST_PASS`      | Performs a rapid inspection              |
-| `THERMAL_SCAN`   | Investigates potential thermal anomalies |
-| `HOVER_DIAGNOSE` | Performs deeper diagnosis                |
-| `PHYSICAL_CLEAN` | Attempts to resolve dust contamination   |
-| `LOG_AND_SKIP`   | Records the issue for human intervention |
+**Resolving faults that restore output** versus **spending resources on actions that were not necessary.**
 
-Each action carries a different operational trade-off.
-
-Fast inspection conserves resources but provides less information.
-
-Detailed diagnosis consumes more resources but can be justified when the potential cost of missing a fault is high.
-
-Physical cleaning can resolve contamination, while logging provides a safe escalation path when autonomous intervention is inappropriate.
+An agent that hovers and runs full diagnostics over every panel burns battery without adding value. One that fast-passes a severe hotspot saves battery in the short term and causes a component failure in the long one. The reward function is designed to make both of those outcomes hurt, so the agent learns to find the boundary between them rather than being told where it is.
 
 ---
 
-# Reward Engineering
+## Uncertainty Is the Point
 
-The reward function is where operational priorities become part of the learning problem.
+The environment is stochastic. The same action in the same state does not always produce the same outcome, because real faults do not behave deterministically.
 
-SolarGuard balances:
-
-**Fault detection and resolution**
-
-against
-
-**Inspection cost and unnecessary intervention**
-
-The agent therefore has to think beyond the immediate reward.
-
-For example, aggressively diagnosing every normal panel would generate activity but waste resources. Ignoring a severe hotspot may save resources in the short term but create a much larger downstream penalty.
-
-The reward design encourages the agent to discover this balance through the optimisation process.
-
----
-
-# A Stochastic Environment
-
-Real-world asset conditions are rarely deterministic.
-
-A cleaning action may successfully restore a dusty panel. A thermal scan may reveal additional information. An untreated problem may remain stable or deteriorate.
-
-SolarGuard captures this uncertainty through a transition probability model:
-
-```text
+```
 P[action, current_state, next_state]
 ```
 
-Instead of assuming:
-
-> Action X always produces outcome Y
-
-the environment asks:
-
-> Given the current state and chosen action, what are the possible next states and how likely is each one?
-
-This probabilistic formulation allows the policy to optimise for **expected long-term outcomes**, rather than relying on rigid if/else rules.
+A `FAST_PASS` over a `HOTSPOT_EARLY` cluster carries a 40% probability of that fault progressing to `HOTSPOT_SEVERE`, because the early signs were missed. A `THERMAL_SCAN` over the same cluster routes with high probability to `LOGGED_PENDING`, because the anomaly was caught. The agent has to account for that gap in every decision. Rigid rules cannot do that. A learned policy can.
 
 ---
 
-# Value Iteration
+## Two Algorithms, One Validation
 
-SolarGuard implements **Value Iteration** using finite-horizon backward induction.
+The optimal policy is found using two independent Dynamic Programming solvers, both implemented from scratch:
 
-For each state-action pair, the algorithm evaluates the immediate reward alongside the expected value of future states:
+**Value Iteration** works backward across the horizon, applying the Bellman update at every state until the value function converges:
 
-```text
-Q(s,a) = R(s,a) + γ Σ P(s'|s,a)V(s')
+```
+Q(s, a) = R(s, a) + γ · Σ P(s'|s, a) · V(s')
+V(s) ← max_a Q(s, a)
 ```
 
-The optimal action is the one with the highest expected return.
+**Policy Iteration** starts with an initial policy, evaluates it fully, improves it greedily, and repeats until nothing changes.
 
-This produces a state-specific policy that answers:
-
-> **"If the drone encounters this condition, what should it do?"**
+Running both is deliberate. If two independent methods converge to the same policy, the formulation is correct. If they disagree, something is wrong.
 
 ---
 
-# Policy Iteration
+## What the Agent Learns
 
-The project independently solves the same decision problem using **Policy Iteration**.
+None of this is programmed in. It emerges from the reward structure and transition dynamics:
 
-The process alternates between:
-
-```text
-Initial Policy
-     ↓
-Policy Evaluation
-     ↓
-Policy Improvement
-     ↓
-Improved Policy
-     ↓
-Repeat Until Stable
+```
+NORMAL          →  FAST_PASS        No fault, no reason to spend resources
+DUST_MINOR      →  PHYSICAL_CLEAN   Cheap to fix now, expensive if left
+HOTSPOT_EARLY   →  THERMAL_SCAN     Gather information before it gets worse
+HOTSPOT_SEVERE  →  HOVER_DIAGNOSE   Risk justifies the cost
+PHYSICAL_DAMAGE →  LOG_AND_SKIP     Drone cannot fix this, escalate
 ```
 
-Using both approaches creates a useful validation mechanism.
-
-Instead of trusting a single implementation, SolarGuard can compare whether two independent Dynamic Programming methods converge toward the same decision policy.
+That last one is the most interesting result. The agent learns that recognising the limit of its own capability is sometimes the optimal action. Not every fault is the drone's problem to solve.
 
 ---
 
-# What Does the Agent Actually Learn?
+## Results
 
-The resulting behaviour is intuitive, but the important point is that these actions emerge from the reward and transition structure rather than from a manually written decision tree.
+Both solvers are evaluated across **1,000 simulated inspection episodes** from uniformly random start states.
 
-### Healthy panel
+| Metric | Value Iteration | Policy Iteration |
+|---|---|---|
+| Convergence time | 2.38 ms | 13.33 ms |
+| Outer iterations | 15 | 3 |
+| Average episode reward | 57.13 | 58.02 |
+| Reward std dev | 42.94 | 41.17 |
+| Policies identical | Yes | Yes |
 
-```text
-NORMAL
-   ↓
-FAST_PASS
-```
-
-The agent avoids unnecessary expensive inspection.
-
-### Developing hotspot
-
-```text
-HOTSPOT_EARLY
-   ↓
-THERMAL_SCAN
-```
-
-The system prioritises additional information before the condition potentially becomes more serious.
-
-### Severe hotspot
-
-```text
-HOTSPOT_SEVERE
-   ↓
-HOVER_DIAGNOSE
-```
-
-Higher inspection cost becomes justified by the potential operational risk.
-
-### Physical damage
-
-```text
-PHYSICAL_DAMAGE
-   ↓
-LOG_AND_SKIP
-```
-
-The autonomous system recognises that escalation can be the optimal decision when direct intervention is unsuitable.
-
-The broader principle is:
-
-> **Good autonomous behaviour is not about always doing more. It is about choosing the right action for the situation.**
+Both converge to the same policy. The reward standard deviation reflects start-state heterogeneity: a flight starting at `PHYSICAL_DAMAGE` earns far less than one starting at `NORMAL`, which is expected and correct.
 
 ---
 
-# 📊 Evaluation
+## The Bigger Picture
 
-A policy is only useful if it performs well beyond a single example.
+SolarGuard is currently the decision layer. A full autonomous system would look like this:
 
-SolarGuard evaluates the learned policies through **1,000 simulated inspection episodes**.
+```
+              DRONE
+                │
+    ┌───────────┴───────────┐
+    ↓                       ↓
+RGB Camera            Thermal Camera
+    │                       │
+    └───────────┬───────────┘
+                ↓
+       AI Fault Detection
+                ↓
+        State Estimation
+                ↓
+     SolarGuard RL Decision Engine
+                ↓
+        Optimal Action
+    ┌──────┼──────┼──────┐
+    ↓      ↓      ↓      ↓
+  Scan  Diagnose Clean  Escalate
+```
 
-The evaluation compares Value Iteration and Policy Iteration across:
+The tabular MDP is the proof of concept. The architecture above is where it goes.
 
-* Cumulative reward
-* Reward distributions
-* Policy agreement
-* Convergence behaviour
-* Computational performance
+---
 
-The notebook also generates visualisations of the learned policy, transition behaviour, and simulation outcomes.
+## What Comes Next
 
-This creates a complete modelling workflow:
+**Computer Vision Integration:** Replace manual state labels with model-predicted inputs from RGB and thermal imagery.
 
-```text
-Formulate
-   ↓
-Model
-   ↓
-Optimise
-   ↓
-Validate
-   ↓
-Simulate
-   ↓
-Interpret
+**Battery-Aware Planning:** Add remaining battery, flight distance, and return-to-base constraints into the state representation.
+
+**Partial Observability:** Move to a POMDP where the drone infers asset condition from imperfect sensor readings rather than known ground truth.
+
+**Deep RL:** Scale to continuous state spaces with DQN, Double DQN, PPO, or Actor-Critic methods.
+
+**Multi-Drone Coordination:** Divide inspection zones across multiple agents coordinating decisions at farm scale.
+
+**Human-in-the-Loop Autonomy:** Introduce confidence thresholds so high-risk decisions go to a human operator before execution.
+
+---
+
+## Project Snapshot
+
+| | |
+|---|---|
+| **Domain** | Renewable Energy / Autonomous Systems |
+| **Approach** | Reinforcement Learning via MDP |
+| **States** | 8 |
+| **Actions** | 5 |
+| **Horizon** | 15 inspection stops |
+| **Discount** | γ = 0.95 |
+| **Solvers** | Value Iteration + Policy Iteration (from scratch) |
+| **Validation** | 1,000 simulated episodes |
+| **Stack** | Python, NumPy, Matplotlib |
+
+```bash
+pip install numpy matplotlib jupyter
+jupyter notebook scenario2_drone_inspection.ipynb
+# Or upload to Google Colab and hit Run All
 ```
 
 ---
 
-# 📈 Why the Approach Is Interesting
+## Final Thought
 
-A rule-based system might say:
+SolarGuard started with one question: what should an autonomous drone do after it finds something?
 
-```text
-IF hotspot
-THEN thermal scan
-```
+The answer is not always to investigate more deeply. Sometimes it is to scan. Sometimes to clean. Sometimes to diagnose. And sometimes the most intelligent autonomous action is to stop, log the problem, and hand it to a human.
 
-SolarGuard asks a richer question:
-
-```text
-Given the current state,
-the available actions,
-their costs,
-the probability of future states,
-and the long-term reward,
-
-which action has the highest expected value?
-```
-
-That distinction is fundamental to Reinforcement Learning.
-
-The system is optimising a **policy**, not simply applying a collection of predefined rules.
+That is the idea: move AI from recognising problems to making decisions about them.
 
 ---
 
-# Technology Stack
+**43008 Reinforcement Learning, University of Technology Sydney, Spring 2026.**
+MDP formulation, transition matrices, reward design, and both solvers are original and written from scratch.
 
-### Programming
-
-* Python
-* NumPy
-* Matplotlib
-
-### Reinforcement Learning
-
-* Markov Decision Processes
-* Dynamic Programming
-* Value Iteration
-* Policy Iteration
-* Finite-horizon planning
-* Discounted reward optimisation
-
-### Modelling
-
-* Stochastic transition modelling
-* Reward engineering
-* State-space design
-* Action-cost modelling
-
-### Evaluation
-
-* 1,000 simulated episodes
-* Cumulative reward analysis
-* Policy comparison
-* Convergence analysis
-* Simulation-based evaluation
-
----
-
-# From Prototype to Autonomous Inspection System
-
-SolarGuard currently focuses on the **decision-making layer** using a compact, interpretable MDP.
-
-A larger real-world architecture could connect perception directly to the RL policy:
-
-```text
-                    DRONE
-                      │
-          ┌───────────┴───────────┐
-          ↓                       ↓
-     RGB Camera              Thermal Camera
-          │                       │
-          └───────────┬───────────┘
-                      ↓
-             AI Fault Detection
-                      ↓
-              State Estimation
-                      ↓
-              RL Decision Engine
-                      ↓
-             Optimal Action
-          ┌──────┼──────┼──────┐
-          ↓      ↓      ↓      ↓
-        Scan   Diagnose Clean  Escalate
-          │      │      │      │
-          └──────┴──────┴──────┘
-                      ↓
-               Updated State
-                      ↓
-                Next Decision
-```
-
-This architecture creates a natural path from a controlled RL environment toward a broader autonomous inspection platform.
-
----
-
-# Future Development
-
-The current tabular MDP provides an interpretable foundation. The same decision framework could be expanded substantially.
-
-### Computer Vision Integration
-
-Use RGB and thermal imagery to estimate the state of individual panels automatically.
-
-### Battery-Aware Planning
-
-Add remaining battery, flight distance, weather, and return-to-base constraints to the state representation.
-
-### Partial Observability
-
-Move from a fully known environment toward a **POMDP**, where the drone must infer asset condition from imperfect sensor observations.
-
-### Deep Reinforcement Learning
-
-Scale beyond a compact tabular state space using approaches such as:
-
-* Deep Q-Networks
-* Double DQN
-* PPO
-* Actor-Critic methods
-
-### Multi-Drone Coordination
-
-Allow multiple autonomous drones to divide inspection zones and coordinate decisions across a large solar farm.
-
-### Digital Twin Integration
-
-Connect inspection decisions with a digital representation of the physical solar asset to support asset-level maintenance planning.
-
-### Human-in-the-Loop Autonomy
-
-Introduce confidence thresholds and escalation rules so that high-risk decisions can be reviewed by human operators.
-
----
-
-# What This Project Demonstrates
-
-SolarGuard brings together several capabilities that matter across modern AI, robotics, and data-driven engineering:
-
-**Reinforcement Learning**
-Designing an agent that optimises sequential decisions.
-
-**Mathematical Modelling**
-Turning an operational inspection problem into an MDP.
-
-**Reward Engineering**
-Encoding competing objectives into an optimisation framework.
-
-**Probabilistic Reasoning**
-Modelling uncertain transitions rather than assuming deterministic outcomes.
-
-**Algorithm Implementation**
-Implementing and comparing Value Iteration and Policy Iteration.
-
-**Simulation**
-Testing policies across 1,000 stochastic episodes.
-
-**Explainable Decision-Making**
-Producing a transparent mapping between asset condition and recommended action.
-
-**Applied AI**
-Connecting RL concepts to renewable-energy inspection and autonomous systems.
-
----
-
-# Project Snapshot
-
-|                      |                                             |
-| -------------------- | ------------------------------------------- |
-| **Domain**           | Renewable Energy / Autonomous Systems       |
-| **Problem**          | Autonomous solar-panel inspection decisions |
-| **AI Approach**      | Reinforcement Learning                      |
-| **Environment**      | Markov Decision Process                     |
-| **States**           | 8                                           |
-| **Actions**          | 5                                           |
-| **Planning Horizon** | 15 inspection stops                         |
-| **Discount Factor**  | 0.95                                        |
-| **Optimisation**     | Value Iteration + Policy Iteration          |
-| **Evaluation**       | 1,000 simulated episodes                    |
-| **Language**         | Python                                      |
-
----
-
-#  Final Thought
-
-SolarGuard started with a simple question:
-
-> **What should an autonomous drone do after it finds something interesting?**
-
-The answer is not always **inspect more**.
-
-Sometimes the best decision is to scan.
-
-Sometimes it is to diagnose.
-
-Sometimes it is to clean.
-
-And sometimes the smartest autonomous action is to stop and ask a human.
-
-That is the idea behind SolarGuard:
-
-**Move AI from recognising problems to making decisions about them.**
+**Yeamin Ahmed** · AI student @ UTS · [LinkedIn](https://linkedin.com/in/yeaminahmed) · [GitHub](https://github.com/yeaminahmed
